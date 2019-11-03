@@ -1,9 +1,9 @@
 #include <torch/torch.h>
 #include <iostream>
 
-torch::nn::Conv2dOptions conv_options(int64_t in_planes, int64_t out_planes, int64_t kerner_size,
+torch::nn::Conv2dOptions conv_options(int64_t in_planes, int64_t out_planes, int64_t kernel_size,
                                       int64_t stride=1, int64_t padding=0, bool with_bias=false){
-  torch::nn::Conv2dOptions conv_options = torch::nn::Conv2dOptions(in_planes, out_planes, kerner_size);
+  torch::nn::Conv2dOptions conv_options = torch::nn::Conv2dOptions(in_planes, out_planes, kernel_size);
   conv_options.stride_ = stride;
   conv_options.padding_ = padding;
   conv_options.with_bias_ = with_bias;
