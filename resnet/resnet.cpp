@@ -1,12 +1,32 @@
 #include <torch/torch.h>
+
+#include <cstddef>
+#include <cstdio>
 #include <iostream>
+#include <string>
+#include <vector>
+
+// Where to find the MNIST dataset.
+const char* kDataRoot = "/home/testroot/CNN/test_libtorch/resnet/data/";
+
+// The batch size for training.
+const int64_t kTrainBatchSize = 64;
+
+// The batch size for testing.
+const int64_t kTestBatchSize = 1000;
+
+// The number of epochs to train.
+const int64_t kNumberOfEpochs = 10;
+
+// After how many batches to log a new update with the loss value.
+const int64_t kLogInterval = 10;
 
 torch::nn::Conv2dOptions conv_options(int64_t in_planes, int64_t out_planes, int64_t kernel_size,
                                       int64_t stride=1, int64_t padding=0, bool with_bias=false){
   torch::nn::Conv2dOptions conv_options = torch::nn::Conv2dOptions(in_planes, out_planes, kernel_size);
-  conv_options.stride_ = stride;
-  conv_options.padding_ = padding;
-  conv_options.with_bias_ = with_bias;
+  conv_options.stride(stride);
+  conv_options.padding(padding);
+  conv_options.with_bias(with_bias);
   return conv_options;
 }
 
@@ -139,7 +159,7 @@ template <class Block> struct ResNet : torch::nn::Module {
   torch::nn::Linear fc;
 
   ResNet(torch::IntList layers, int64_t num_classes=1000)
-      : conv1(conv_options(3, 64, 7, 2, 3)),
+      : conv1(conv_options(1, 64, 7, 2, 3)),
         bn1(64),
         layer1(_make_layer(64, layers[0])),
         layer2(_make_layer(128, layers[1], 2)),
@@ -155,6 +175,7 @@ template <class Block> struct ResNet : torch::nn::Module {
     register_module("layer4", layer4);
     register_module("fc", fc);
 
+    /*
     // Initializing weights
     for(auto m: this->modules()){
       if (m.value.name() == "torch::nn::Conv2dImpl"){
@@ -173,6 +194,7 @@ template <class Block> struct ResNet : torch::nn::Module {
         }
       }
     }
+    */
   }
 
   torch::Tensor forward(torch::Tensor x){
@@ -241,17 +263,103 @@ ResNet<BottleNeck> resnet152(){
   return model;
 }
 
+template <typename DataLoader>
+void train(
+    size_t epoch,
+    ResNet<BottleNeck>& model,
+    torch::Device device,
+    DataLoader& data_loader,
+    torch::optim::Optimizer& optimizer,
+    size_t dataset_size) {
+  model.train();
+  size_t batch_idx = 0;
+  for (auto& batch : data_loader) {
+    auto data = batch.data.to(device), targets = batch.target.to(device);
+    optimizer.zero_grad();
+    auto output = model.forward(data);
+    auto loss = torch::nll_loss(output, targets);
+    AT_ASSERT(!std::isnan(loss.template item<float>()));
+    loss.backward();
+    optimizer.step();
 
-int main() {
-  torch::Device device("cpu");
-  if (torch::cuda::is_available()){
-    device = torch::Device("cuda:0");
+    if (batch_idx++ % kLogInterval == 0) {
+      std::printf(
+          "\rTrain Epoch: %ld [%5ld/%5ld] Loss: %.4f",
+          epoch,
+          batch_idx * batch.data.size(0),
+          dataset_size,
+          loss.template item<float>());
+    }
+  }
+}
+
+template <typename DataLoader>
+void test(
+    ResNet<BottleNeck>& model,
+    torch::Device device,
+    DataLoader& data_loader,
+    size_t dataset_size) {
+  torch::NoGradGuard no_grad;
+  model.eval();
+  double test_loss = 0;
+  int32_t correct = 0;
+  for (const auto& batch : data_loader) {
+    auto data = batch.data.to(device), targets = batch.target.to(device);
+    auto output = model.forward(data);
+    test_loss += torch::nll_loss(
+                     output,
+                     targets,
+                     /*weight=*/{},
+                     Reduction::Sum)
+                     .template item<float>();
+    auto pred = output.argmax(1);
+    correct += pred.eq(targets).sum().template item<int64_t>();
   }
 
-  torch::Tensor t = torch::rand({2, 3, 224, 224}).to(device);
-  ResNet<BottleNeck> resnet = resnet101();
-  resnet.to(device);
+  test_loss /= dataset_size;
+  std::printf(
+      "\nTest set: Average loss: %.4f | Accuracy: %.3f\n",
+      test_loss,
+      static_cast<double>(correct) / dataset_size);
+}
 
-  t = resnet.forward(t);
-  std::cout << t.sizes() << std::endl;
+auto main() -> int {
+  torch::manual_seed(1);
+
+  torch::DeviceType device_type;
+  if (torch::cuda::is_available()) {
+    std::cout << "CUDA available! Training on GPU." << std::endl;
+    device_type = torch::kCUDA;
+  } else {
+    std::cout << "Training on CPU." << std::endl;
+    device_type = torch::kCPU;
+  }
+  torch::Device device(device_type);
+
+  ResNet<BottleNeck> model = resnet101();
+  model.to(device);
+
+  auto train_dataset = torch::data::datasets::MNIST(kDataRoot)
+                           .map(torch::data::transforms::Normalize<>(0.1307, 0.3081))
+                           .map(torch::data::transforms::Stack<>());
+  const size_t train_dataset_size = train_dataset.size().value();
+  auto train_loader =
+      torch::data::make_data_loader<torch::data::samplers::SequentialSampler>(
+          std::move(train_dataset), kTrainBatchSize);
+
+  auto test_dataset = torch::data::datasets::MNIST(
+                          kDataRoot, torch::data::datasets::MNIST::Mode::kTest)
+                          .map(torch::data::transforms::Normalize<>(0.1307, 0.3081))
+                          .map(torch::data::transforms::Stack<>());
+  const size_t test_dataset_size = test_dataset.size().value();
+  auto test_loader =
+      torch::data::make_data_loader(std::move(test_dataset), kTestBatchSize);
+
+  torch::optim::SGD optimizer(
+      model.parameters(), torch::optim::SGDOptions(0.01).momentum(0.5));
+
+  for (size_t epoch = 1; epoch <= kNumberOfEpochs; ++epoch) {
+    train(epoch, model, device, *train_loader, optimizer, train_dataset_size);
+    test(model, device, *test_loader, test_dataset_size);
+  }
 }
