@@ -22,7 +22,7 @@ const int64_t kNumberOfEpochs = 10;
 const int64_t kLogInterval = 10;
 
 torch::nn::Conv2dOptions conv_options(int64_t in_planes, int64_t out_planes, int64_t kernel_size,
-                                      int64_t stride=1, int64_t padding=0, bool with_bias=false){
+                                      int64_t stride=1, int64_t padding=1, bool with_bias=false){
   torch::nn::Conv2dOptions conv_options = torch::nn::Conv2dOptions(in_planes, out_planes, kernel_size);
   conv_options.stride(stride);
   conv_options.padding(padding);
@@ -99,11 +99,11 @@ struct BottleNeck : torch::nn::Module {
 
   BottleNeck(int64_t inplanes, int64_t planes, int64_t stride_=1,
              torch::nn::Sequential downsample_=torch::nn::Sequential())
-      : conv1(conv_options(inplanes, planes, 1)),
+      : conv1(conv_options(inplanes, planes, 1, 1, 0)),
         bn1(planes),
         conv2(conv_options(planes, planes, 3, stride_, 1)),
         bn2(planes),
-        conv3(conv_options(planes, planes * expansion , 1)),
+        conv3(conv_options(planes, planes * expansion , 1, 1, 0)),
         bn3(planes * expansion),
         downsample(downsample_)
         {
